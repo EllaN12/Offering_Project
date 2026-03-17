@@ -36,7 +36,7 @@ Reads the raw email CSV (`Raw_Data/March_03_2026.csv`) with columns: `Title`, `P
 
 Filters down to three payment senders and processes each separately:
 
-**Zelle** (sender: `pncalerts@pnc.com`)
+**Zelle** (sender: `bank_email`)
 - Keeps emails with subject containing `"sent you a Zelle® payment"`
 - Extracts via regex: `full_name`, `date`, `time`, `amount`, `note`
 - Applies `time_extract()` to compute a `realized_date`:
