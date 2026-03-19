@@ -17,7 +17,7 @@ BASE_DIR = Path(__file__).resolve().parent
 
 
 def resolve_data_file(file_name: str) -> Path:
-    """Resolve a file in Raw_Data, including nested export folders."""
+    """Resolve a specific file in Raw_Data, including nested export folders."""
     raw_data_dir = BASE_DIR / "Raw_Data"
     direct_file = raw_data_dir / file_name
 
@@ -32,12 +32,30 @@ def resolve_data_file(file_name: str) -> Path:
         f"Could not find '{file_name}' in '{raw_data_dir}' or its subfolders."
     )
 
-# Read CSV without headers
-data_path = resolve_data_file("March_03_2026.csv")
+
+def resolve_latest_csv_file() -> Path:
+    """Pick the newest CSV in Raw_Data (searches nested folders too)."""
+    raw_data_dir = BASE_DIR / "Raw_Data"
+    if not raw_data_dir.exists():
+        raise FileNotFoundError(
+            f"Raw data folder not found: '{raw_data_dir}'. Create it and add CSV files."
+        )
+
+    csv_files = list(raw_data_dir.rglob("*.csv"))
+    if not csv_files:
+        raise FileNotFoundError(
+            f"No CSV files found in '{raw_data_dir}' or its subfolders."
+        )
+
+    return max(csv_files, key=lambda p: p.stat().st_mtime)
+
+# Read latest CSV without headers
+data_path = resolve_latest_csv_file()
+print(f"Using latest CSV file: {data_path}")
 df = pd.read_csv(data_path,names = column_names , header=None)
 
 # Keep only donation emails (Zelle, CashAPP, Paypal)
-df = df[df['Payment_Type'].isin(['Bank Email <bank_email>', 'Cash App <cash@square.com>', 'service@paypal.com <service@paypal.com>' ])]
+df = df[df['Payment_Type'].isin(['Bank Email <bank_email>', 'Cash App <cash@square.com>', 'service@paypal.com <service@paypal.com>' ])] # bank email omitted for privacy
 
 df['Payment_Type']
 
@@ -63,7 +81,7 @@ zelle_receipts.columns.to_list()
 import pandas as pd
 import re
 
-# Assuming df is your DataFrame with an 'email' column containing the text
+# extract email info
 
 def extract_email_info(email_text):
     """Extract name, date, time, amount, and note from email text"""
@@ -125,7 +143,7 @@ def time_extract(df):
     df['date'] = pd.to_datetime(df['date'], format='%m/%d/%y')
     df['time'] = pd.to_datetime(df['time'], format='%I:%M %p')
     
-    # Time condition: <= 9:59 PM
+    # Time condition: <= 10:00 PM
     time_condition = df['time'].dt.hour * 60 + df['time'].dt.minute <= 22 * 60
     
     # Business day check
@@ -167,7 +185,7 @@ paypal_df = df[df['Payment_Type'].isin(['service@paypal.com <service@paypal.com>
 # Filter PayPal transactions to add only "You've got money" offerings
 paypal_receipts_df = paypal_df[
     paypal_df['Title'].str.contains("You've got money", case=False, na=False)
-].copy()  # BUG FIX 4: .copy() prevents SettingWithCopyWarning
+].copy()  
 
 
 def extract_email_data(email_text):
@@ -218,8 +236,7 @@ def extract_email_data(email_text):
 # Apply extraction to the email column
 extracted_data = paypal_receipts_df['Email_body'].apply(extract_email_data)
 
-# BUG FIX 2 & 3: Use correct key names matching what extract_email_data stores,
-# and use .get() so missing keys return None instead of crashing
+
 paypal_receipts_df['full_name']      = extracted_data.apply(lambda x: x.get('full_name'))
 paypal_receipts_df['Date']           = extracted_data.apply(lambda x: x.get('Date'))
 paypal_receipts_df['Time']           = extracted_data.apply(lambda x: x.get('Time'))
@@ -232,17 +249,12 @@ print(paypal_receipts_df.head())
 paypal_receipts_df.columns.to_list()
 paypal_receipts_df[paypal_receipts_df['full_name']== "None"].count()
 #%%
-##Cashapp Processing
+##Cashapp 
 
 import pandas as pd
 import re
 from datetime import datetime
 
-# Filter only Cash App data
-cash_app_df = df[df['Payment_Type'].isin(['Cash App <cash@square.com>'])]
-
-import pandas as pd
-import re
 
 # Filter only Cash App data
 cashapp_df = df[df['Payment_Type'].str.contains('cash@square.com', case=False, na=False)]
@@ -273,7 +285,7 @@ def extract_cashapp_data(email_text):
         data['Time'] = date_match.group(2)   # e.g. 11:28 AM
 
     # --- Full Name ---
-    # Targets: "Sender: Yvon N Manahimg" (explicit label, most reliable)
+    # Targets: "Sender: Yvon N Doe" (explicit label, most reliable)
     sender_match = re.search(r'Sender:\s*([^\r\n]+)', email_text, re.IGNORECASE)
     if sender_match:
         data['full_name'] = sender_match.group(1).strip()
@@ -313,3 +325,91 @@ cashapp_receipts_df['Transaction_id']   = extracted_data.apply(lambda x: x.get('
 cashapp_receipts_df.columns.to_list()
 
 # %%
+def to_amount(series: pd.Series) -> pd.Series:
+    """Convert amount-like strings to numeric values."""
+    return pd.to_numeric(
+        series.astype(str).str.replace(",", "", regex=False).str.replace("$", "", regex=False),
+        errors="coerce"
+    ).fillna(0.0)
+
+
+def build_combined_report(
+    zelle_source: pd.DataFrame,
+    cash_app_source: pd.DataFrame,
+    paypal_source: pd.DataFrame
+) -> pd.DataFrame:
+    """Combine Zelle, Cash App and PayPal data into one standardized report."""
+    zelle_report = pd.DataFrame({
+        "Date": pd.to_datetime(zelle_source.get("realized_date"), errors="coerce"),
+        "Platform": "Zelle",
+        "Sender": zelle_source.get("full_name"),
+        "Amount": to_amount(zelle_source.get("amount", pd.Series(dtype="float64"))),
+        "Note": zelle_source.get("Note"),
+        "Transaction_id": zelle_source.get("Reference_num")
+    })
+
+    cash_app_report = pd.DataFrame({
+        "Date": pd.to_datetime(cash_app_source.get("Date"), errors="coerce"),
+        "Platform": "Cash App",
+        "Sender": cash_app_source.get("full_name"),
+        "Amount": to_amount(cash_app_source.get("Received_amount", pd.Series(dtype="float64"))),
+        "Note": cash_app_source.get("Note"),
+        "Transaction_id": cash_app_source.get("Transaction_id")
+    })
+
+    paypal_report = pd.DataFrame({
+        "Date": pd.to_datetime(paypal_source.get("Date"), errors="coerce"),
+        "Platform": "PayPal",
+        "Sender": paypal_source.get("full_name"),
+        "Amount": to_amount(paypal_source.get("Received_amount", pd.Series(dtype="float64"))),
+        "Note": paypal_source.get("Description"),
+        "Transaction_id": paypal_source.get("Transaction_id")
+    })
+
+    combined = pd.concat([zelle_report, cash_app_report, paypal_report], ignore_index=True)
+    combined = combined.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
+    combined["Running_Total"] = combined["Amount"].cumsum()
+    return combined
+
+
+def build_period_summary(combined_df: pd.DataFrame, period: str) -> pd.DataFrame:
+    """Build weekly/monthly/yearly totals and cumulative running totals."""
+    period_start = combined_df["Date"].dt.to_period(period).dt.start_time
+
+    summary = (
+        combined_df.assign(Period_Start=period_start)
+        .groupby("Period_Start", as_index=False)
+        .agg(
+            Transactions=("Amount", "count"),
+            Period_Total=("Amount", "sum")
+        )
+        .sort_values("Period_Start")
+        .reset_index(drop=True)
+    )
+    summary["Running_Total"] = summary["Period_Total"].cumsum()
+    return summary
+
+
+def export_combined_reports(output_path: Path) -> None:
+    # Keep aliases requested in the reporting requirement.
+    cash_App_df = cashapp_receipts_df
+    PayPal_df = paypal_receipts_df
+
+    combined_report = build_combined_report(zelle_final, cash_App_df, PayPal_df)
+    weekly_summary = build_period_summary(combined_report, "W")
+    monthly_summary = build_period_summary(combined_report, "M")
+    yearly_summary = build_period_summary(combined_report, "Y")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with pd.ExcelWriter(output_path, engine="openpyxl", datetime_format="YYYY-MM-DD") as writer:
+        combined_report.to_excel(writer, sheet_name="Combined_Report", index=False)
+        weekly_summary.to_excel(writer, sheet_name="Weekly_Summary", index=False)
+        monthly_summary.to_excel(writer, sheet_name="Monthly_Summary", index=False)
+        yearly_summary.to_excel(writer, sheet_name="Yearly_Summary", index=False)
+
+    print(f"Exported: {output_path}")
+
+
+if __name__ == "__main__":
+    export_combined_reports(BASE_DIR / "Output" / "offerings_summary_report.xlsx")

@@ -5,8 +5,8 @@ from openpyxl.utils import get_column_letter
 
 
 # ─── DataFrames ────────────────────────────────────────────────────────────────
-# Replace the sample data below with your actual parsed email data.
-# Each DataFrame should be populated from your email extraction logic.
+#synthetic data for testing, not actual data
+# Each DataFrame is populated from email extraction logic but not included here for privacy reasons.
 
 zelle_df = pd.DataFrame(columns=[
     "Date", "Amount", "Sender Name", "Memo"
@@ -101,10 +101,7 @@ def write_sheet(wb: Workbook, name: str, df: pd.DataFrame,
                 cell.alignment = Alignment(horizontal="center", vertical="center")
 
     # Totals row
-    if df.empty:
-        total_row = len(df) + 2
-    else:
-        total_row = len(df) + 2
+    total_row = len(df) + 2
 
     for c_idx, col in enumerate(cols, start=1):
         cell = ws.cell(row=total_row, column=c_idx)
@@ -136,14 +133,102 @@ def write_sheet(wb: Workbook, name: str, df: pd.DataFrame,
     ws.freeze_panes = "A2"
 
 
+def build_combined_df() -> pd.DataFrame:
+    """Combine Zelle, CashApp, and PayPal into one standardized DataFrame."""
+    zelle = pd.DataFrame({
+        "Date":           pd.to_datetime(zelle_df["Date"], errors="coerce"),
+        "Platform":       "Zelle",
+        "Sender":         zelle_df["Sender Name"],
+        "Amount":         pd.to_numeric(zelle_df["Amount"], errors="coerce").fillna(0.0),
+        "Note":           zelle_df["Memo"],
+        "Transaction_ID": pd.NA,
+    })
+    cashapp = pd.DataFrame({
+        "Date":           pd.to_datetime(cashapp_df["Date"], errors="coerce"),
+        "Platform":       "Cash App",
+        "Sender":         cashapp_df["Sender Name"],
+        "Amount":         pd.to_numeric(cashapp_df["Amount"], errors="coerce").fillna(0.0),
+        "Note":           cashapp_df["Note"],
+        "Transaction_ID": cashapp_df["Transaction ID"],
+    })
+    paypal = pd.DataFrame({
+        "Date":           pd.to_datetime(paypal_df["Date"], errors="coerce"),
+        "Platform":       "PayPal",
+        "Sender":         paypal_df["Sender Name"],
+        "Amount":         pd.to_numeric(paypal_df["Net Amount"], errors="coerce").fillna(0.0),
+        "Note":           paypal_df["Description"],
+        "Transaction_ID": paypal_df["Transaction ID"],
+    })
+    combined = pd.concat([zelle, cashapp, paypal], ignore_index=True)
+    combined = combined.dropna(subset=["Date"]).sort_values("Date").reset_index(drop=True)
+    combined["Running_Total"] = combined["Amount"].cumsum()
+    return combined
+
+
+def build_period_summary(combined_df: pd.DataFrame, period: str) -> pd.DataFrame:
+    """Aggregate combined transactions to weekly ('W'), monthly ('M'), or yearly ('Y') totals."""
+    period_start = combined_df["Date"].dt.to_period(period).dt.start_time
+    summary = (
+        combined_df.assign(Period_Start=period_start)
+        .groupby("Period_Start", as_index=False)
+        .agg(
+            Transactions=("Amount", "count"),
+            Period_Total=("Amount", "sum"),
+        )
+        .sort_values("Period_Start")
+        .reset_index(drop=True)
+    )
+    summary["Running_Total"] = summary["Period_Total"].cumsum()
+    return summary
+
+
+SUMMARY_CONFIG = {
+    "Combined_Report": {
+        "header_color": "2C3E50", "tab_color": "2C3E50",
+        "amount_cols": ["Amount", "Running_Total"],
+    },
+    "Weekly_Summary": {
+        "header_color": "1A5276", "tab_color": "1A5276",
+        "amount_cols": ["Period_Total", "Running_Total"],
+    },
+    "Monthly_Summary": {
+        "header_color": "145A32", "tab_color": "145A32",
+        "amount_cols": ["Period_Total", "Running_Total"],
+    },
+    "Yearly_Summary": {
+        "header_color": "6E2F9E", "tab_color": "6E2F9E",
+        "amount_cols": ["Period_Total", "Running_Total"],
+    },
+}
+
+
 def export_to_excel(output_path: str):
     wb = Workbook()
     wb.remove(wb.active)  # remove default blank sheet
 
+    # Individual platform sheets
     for name, cfg in TAB_CONFIG.items():
         write_sheet(
             wb, name,
             df=cfg["df"],
+            header_color=cfg["header_color"],
+            tab_color=cfg["tab_color"],
+            amount_cols=cfg["amount_cols"],
+        )
+
+    # Combined and period summary sheets
+    combined = build_combined_df()
+    summary_sheets = {
+        "Combined_Report": combined,
+        "Weekly_Summary":  build_period_summary(combined, "W"),
+        "Monthly_Summary": build_period_summary(combined, "M"),
+        "Yearly_Summary":  build_period_summary(combined, "Y"),
+    }
+    for name, df in summary_sheets.items():
+        cfg = SUMMARY_CONFIG[name]
+        write_sheet(
+            wb, name,
+            df=df,
             header_color=cfg["header_color"],
             tab_color=cfg["tab_color"],
             amount_cols=cfg["amount_cols"],

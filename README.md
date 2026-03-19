@@ -20,7 +20,7 @@ Raw_Data/
 extract_transform.py           ← Parse & clean each platform's emails
         │
         ▼
-export.py                      ← Write 3-tab formatted Excel workbook
+export.py                      ← Write 3-tab formatted Excel workbook for further analysis and 1 summary report for executive review.
         │
         ▼
 Output/offerings_export.xlsx   ← Final output
@@ -40,7 +40,7 @@ Filters down to three payment senders and processes each separately:
 - Keeps emails with subject containing `"sent you a Zelle® payment"`
 - Extracts via regex: `full_name`, `date`, `time`, `amount`, `note`
 - Applies `time_extract()` to compute a `realized_date`:
-  - If the payment was received on a business day at or before 9:59 PM → same day
+  - If the payment was received on a business day at or before 10:00 PM → same day
   - Otherwise (weekend, US federal holiday, or after cutoff) → next business day
 - Uses `USFederalHolidayCalendar` and `CustomBusinessDay` from pandas for holiday-aware logic
 
